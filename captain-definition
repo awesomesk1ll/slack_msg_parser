@@ -1,4 +1,4 @@
 {
  "schemaVersion" :2 ,
- "imageName" :"satantime/puppeteer-node"
+ "imageName" :"leilen/puppeteer-image-arm"
 }
