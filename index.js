@@ -20,6 +20,8 @@ if (!process.env.LOGIN || !process.env.PASSWORD || !process.env.SPREADSHEET_ID |
   process.exit();
 }
 
+console.log('Parser started.');
+
 const { LOGIN, PASSWORD: PASS } = process.env;
 const SAVE_QUEUE_TIMER = +process.env.SAVE_QUEUE_TIMER || 1050;
 const PARSE_TIMER = +process.env.PARSE_TIMER || 60000;
