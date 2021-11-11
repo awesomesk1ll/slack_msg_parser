@@ -1,8 +1,7 @@
-FROM library/node:17-alpine
+FROM satantime/puppeteer-node
 
 RUN apk update && apk upgrade && \
     apk add --no-cache git
-RUN apk install chromium-browser
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app
 
