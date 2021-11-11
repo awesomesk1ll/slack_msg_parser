@@ -14,6 +14,9 @@ const { lastIndexOf } = require('./utils/clusters');
 let CAMPUS;
 let browser, map_sheet, map, info_sheet, info, save_process_handle, map_process_handle, events, log_counter;
 let launchOptions = { headless: true, args: ['--no-sandbox', "--disable-setuid-sandbox", "--disable-gpu", '--start-maximized'] }; //args: ['--start-maximized']
+if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD) {
+  launchOptions.executablePath = '/user/bin/chromium';
+}
 
 if (!process.env.LOGIN || !process.env.PASSWORD || !process.env.SPREADSHEET_ID || !process.env.GOOGLE_KEY || !process.env.GOOGLE_MAIL || !process.env.MAP_SHEET_NAME) {
   console.error('Please setup map parser .env variables.');
