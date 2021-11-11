@@ -12,7 +12,6 @@
   "author": "awesomesk1ll",
   "license": "ISC",
   "dependencies": {
-    "chromium": "^3.0.3",
     "dayjs": "^1.10.6",
     "dotenv": "^10.0.0",
     "google-spreadsheet": "^3.2.0",
