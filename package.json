@@ -1,0 +1,24 @@
+{
+  "name": "21parser",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "purge": "heroku repo:purge_cache -a skcv"
+  },
+  "keywords": [],
+  "author": "awesomesk1ll",
+  "license": "ISC",
+  "dependencies": {
+    "dayjs": "^1.10.6",
+    "dotenv": "^10.0.0",
+    "google-spreadsheet": "^3.1.15",
+    "node-fetch": "^2.6.1",
+    "puppeteer": "3.3.0",
+    "puppeteer-extra": "^3.1.18",
+    "puppeteer-extra-plugin-stealth": "^2.7.8"
+  },
+  "devDependencies": {}
+}
