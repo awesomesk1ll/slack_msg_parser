@@ -107,7 +107,7 @@ const mapRowUpdate = (user, index) => {
 const map_process = async () => {
   let got_clusters_count;
   if (info[1].status === 'ok') {
-    got_clusters_count = await getMapInfo('https://edu.21-school.ru/calendar/future-events');
+    got_clusters_count = await getMapInfo('https://edu.21-school.ru/calendar/events');
 
     if (log_counter) {
       log_counter--;
