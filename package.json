@@ -1,12 +1,11 @@
 {
-  "name": "21parser",
+  "name": "21slackchatparser",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js",
-    "purge": "heroku repo:purge_cache -a skcv"
+    "start": "node index.js"
   },
   "keywords": [],
   "author": "awesomesk1ll",
@@ -15,10 +14,12 @@
     "dayjs": "^1.10.6",
     "dotenv": "^10.0.0",
     "google-spreadsheet": "^3.2.0",
+    "jsdom": "^19.0.0",
     "node-fetch": "^2.6.6",
     "puppeteer": "^11.0.0",
     "puppeteer-extra": "^3.1.18",
-    "puppeteer-extra-plugin-stealth": "^2.7.8"
+    "puppeteer-extra-plugin-stealth": "^2.7.8",
+    "superagent": "^6.1.0"
   },
   "devDependencies": {}
 }

@@ -1,5 +1,7 @@
 require('dotenv').config();
 const http = require('http');
+const fs = require('fs');
+const { JSDOM } = require("jsdom");
 // const puppeteer = require('puppeteer');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const puppeteer = require('puppeteer-extra')
@@ -8,26 +10,34 @@ puppeteer.use(StealthPlugin())
 const dayjs = require('dayjs')
 const utc = require('dayjs/plugin/utc')
 dayjs.extend(utc)
-const { CLUSTERS, Queue, get_headers, format, getRows, setInfo } = require('./utils');
-const { clearInterval } = require('timers');
-const { lastIndexOf } = require('./utils/clusters');
-let CAMPUS;
-let browser, map_sheet, map, info_sheet, info, save_process_handle, map_process_handle, events, log_counter;
+const { Queue, writeData, getRows, setInfo, parseHTML } = require('./utils');
+const { send, mapping } = require('./utils/gform');
+let IDS = [];
+let MSGS, prevMSGS;
+const CH = {};
+const link_delim = /\/|\?/;
+let browser, info_sheet, info, save_process_handle, slack_process_handle;
 let launchOptions = { headless: true, args: ['--no-sandbox', "--disable-setuid-sandbox", "--disable-gpu", '--start-maximized'] }; //args: ['--start-maximized']
 if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD) {
   launchOptions.executablePath = '/usr/bin/chromium';
 }
 
-if (!process.env.LOGIN || !process.env.PASSWORD || !process.env.SPREADSHEET_ID || !process.env.GOOGLE_KEY || !process.env.GOOGLE_MAIL || !process.env.MAP_SHEET_NAME) {
-  console.error('Please setup map parser .env variables.');
+if (!process.env.LOGIN || !process.env.PASSWORD || !process.env.SPREADSHEET_ID || !process.env.GOOGLE_KEY 
+  || !process.env.GOOGLE_MAIL || !process.env.MAP_SHEET_NAME || !process.env.CHANNEL_IDS || !process.env.CHANNEL_NAMES) {
+  console.error('Please setup parser .env variables.');
   process.exit();
 }
+
+const chids = process.env.CHANNEL_IDS.split(" ");
+const chnames = process.env.CHANNEL_NAMES.split(" ");
+chids.forEach((id, index) => { CH[id] = chnames[index]; });
 
 console.log('Parser started.');
 
 const { LOGIN, PASSWORD: PASS } = process.env;
+const GFORM_URL = process.env.GFORM_URL || '';
 const SAVE_QUEUE_TIMER = +process.env.SAVE_QUEUE_TIMER || 1050;
-const PARSE_TIMER = +process.env.PARSE_TIMER || 60000;
+const PARSE_TIMER = +process.env.PARSE_TIMER || 1200000;
 const g_sheet = new GoogleSpreadsheet(process.env.SPREADSHEET_ID);
 
 /**
@@ -42,159 +52,252 @@ const init = async () => {
   const client_email = process.env.GOOGLE_MAIL;
   await g_sheet.useServiceAccountAuth({ private_key, client_email });
   await g_sheet.loadInfo();
-  map_sheet = g_sheet.sheetsByTitle[process.env.MAP_SHEET_NAME];
-  map = await getRows(map_sheet);
-  console.log('// loaded map info');
   info_sheet = g_sheet.sheetsByTitle[process.env.INFO_SHEET_NAME];
   info = await getRows(info_sheet);
   console.log('// loaded services info');
 
-  save_process_handle = setInterval(users_save_queue_handler, SAVE_QUEUE_TIMER);
-  map_process_handle = setInterval(map_process, PARSE_TIMER);
-  map_process();
+  save_process_handle = setInterval(message_queue_handler, SAVE_QUEUE_TIMER);
+  slack_process_handle = setInterval(slack_process, PARSE_TIMER);
+  slack_process();
 };
+
+async function parseSlack () {
+  let started = new Date(), finished;
+  console.log('started new parse', started.toISOString());
+  prevMSGS = MSGS;
+  MSGS = { messages: 0 };
+
+  // writeData(`./Slack_${(new Date).getTime()}_started.json`, JSON.stringify([], null, '\t'));
+  console.log(CH);
+  const channels = Object.keys(CH);
+  for (channel of channels) {
+    MSGS[CH[channel]] = { messages: 0 };
+    data = await parseInfo(channel);
+    MSGS.messages += (MSGS[CH[channel]]?.messages || 0);
+    console.log('GOT', (MSGS[CH[channel]]?.messages || 0), 'messages in', CH[channel]);
+  }
+
+  for (channel in MSGS) { // канал
+    if (channel === 'messages') continue;
+    for (msg in MSGS[channel]) { // сообщение в канале
+      if (msg === 'messages') continue;
+      
+      // channel messages
+      if (!(prevMSGS && prevMSGS[channel] && prevMSGS[channel][msg])) {
+        const id = MSGS[channel][msg]["id"];
+        // пушим в очередь объект сообщения с оригинальным айди
+        if (!info[3]._history.includes(id)) Queue.push({...MSGS[channel][msg]});
+      } else if (prevMSGS[channel][msg] && MSGS[channel][msg]?.text !== prevMSGS[channel][msg]?.text) {
+        const id = MSGS[channel][msg]["id"];
+        // пушим в очередь объект сообщения с суффиксом редактирования
+        if (!info[3]._history.includes(id)) Queue.push({...MSGS[channel][msg], id: id + 'e'});
+      }
+
+      // threads messages
+      if (MSGS[channel][msg].thread) {
+        for (message in MSGS[channel][msg].thread) { // сообщение в треде (кроме главного)
+          if (!(prevMSGS && prevMSGS[channel] && prevMSGS[channel][msg]?.thread && prevMSGS[channel][msg]?.thread[message])) {
+            const id = MSGS[channel][msg]?.thread[message]["id"];
+            // пушим в очередь объект сообщения с оригинальным айди
+            if (!info[3]._history.includes(id)) Queue.push({...MSGS[channel][msg]?.thread[message]});
+          } else if (prevMSGS[channel][msg]?.thread && MSGS[channel][msg].thread[message]?.text !== prevMSGS[channel][msg].thread[message]?.text) {
+            const id = MSGS[channel][msg]?.thread[message]["id"];
+            // пушим в очередь объект сообщения с суффиксом редактирования
+            if (!info[3]._history.includes(id)) Queue.push({...MSGS[channel][msg]?.thread[message], id: id + 'e'});
+          }
+        }
+      }
+    }
+  }
+  finished = new Date();
+  console.log('finished parse', MSGS.messages, "messages,", finished.toISOString(), "- elapsed", (finished-started) / 1000, "seconds");
+  // writeData(`./Slack_${(new Date).getTime()}.json`, JSON.stringify(MSGS, null, '\t'));
+  return true;
+}
 
 /**
 * Обработчик очереди на сохранение.
 */
-const users_save_queue_handler = () => {
-  let index = Queue.shift();
-  if (index != undefined) {
-    if (map[index]?._history?.length) {
-      map[index].history = JSON.stringify(map[index]._history);
+const message_queue_handler = () => {
+  let message = Queue.shift();
+  if (message != undefined && GFORM_URL) {
+    let msg = {...message};
+    if (msg["id"]) {
+      // console.log('msg id is', msg["id"]);
+      info[3]._history = [msg["id"], ...info[3]._history];
+      if (!Queue.length()) setInfo(info, true);
     }
-    map[index].save();
-  }
-}
-
-/**
-* Функция обновления юзера на карте, если требуется
-*/
-const mapRowUpdate = (user, index) => {
-  let historyObj;
-  if (user.place) {
-    if (!CAMPUS[user.nick]) {  // юзер разлогинился
-      historyObj = { seat: user.place, from: +user.changed, to: (new Date).getTime() };
-      user.place = '';
-      user.changed = historyObj.to;
-      user.last_uptime = historyObj.to - historyObj.from;
-      user._history = [historyObj, ...user._history];
-      Queue.push(index);
-    } else if (user.place !== CAMPUS[user.nick].seat) {  // юзер пересел за другую тачку
-      historyObj = { seat: user.place, from: +user.changed, to: (new Date).getTime() - 5000 };
-      user.exp = CAMPUS[user.nick].exp;
-      user.level = CAMPUS[user.nick].level;
-      user.place = CAMPUS[user.nick].seat;
-      user.changed = historyObj.to + 5000;
-      user.last_uptime = historyObj.to - historyObj.from;
-      user._history = [historyObj, ...user._history];
-      Queue.push(index);
-    }
-  } else {
-    if (CAMPUS[user.nick]) {  // залогинился
-      user.exp = CAMPUS[user.nick].exp;
-      user.level = CAMPUS[user.nick].level;
-      user.place = CAMPUS[user.nick].seat;
-      user.changed = +(new Date).getTime();
-      Queue.push(index);
-    }
+    if (msg.thread) delete msg.thread;
+    send(GFORM_URL, { id: msg["id"], data: JSON.stringify(msg) }, mapping);
   }
 }
 
 /**
 * Основной воркер парсинга.
 */
-const map_process = async () => {
-  let got_clusters_count;
-  if (info[1].status === 'ok') {
-    got_clusters_count = await getMapInfo('https://edu.21-school.ru/calendar/events');
-
-    if (log_counter) {
-      log_counter--;
+const slack_process = async () => {
+  if (info[3].status === 'ok') {
+    const is_ok = await parseSlack();
+    if (is_ok) {
+      setInfo(info, true);
     } else {
-      console.log('got clusters', got_clusters_count, 'peers', Object.keys(CAMPUS).length);
-      console.log('IN_CAMPUS', CAMPUS);
-      log_counter = 15;
-    }
-
-    if (got_clusters_count === 9) {
-      map.forEach(mapRowUpdate);
-      setInfo(info, true, events);
-    } else {
-      setInfo(info, false, events);
+      setInfo(info, false);
     }
   }
 }
 
-/**
-* Получает содержимое элемента по селектору и форматирует его, если нужно
-*/
-async function getData(page, selector, format) {
-  const element = await page.waitForSelector(selector);
-  const value = await element.evaluate(el => el.textContent);
-  // console.log("returning value", value);
-  return format ? format(value) : value;
+function simple_parse(msgElem, threadpost) {
+  // https://21born2code.slack.com/archives/C02JZSHHL6A/p1638785091011700
+  // https://21born2code.slack.com/archives/C02JZSHHL6A/p1638785456012200?thread_ts=1638785091.011700&cid=C02JZSHHL6A
+  const link = msgElem.lastChild.children[1].href;
+  const channel = link && link.split(link_delim)[4];
+  const epoch = msgElem?.lastChild?.children[1]?.dataset?.ts && msgElem.lastChild.children[1].dataset.ts.split(".")[0];
+  const id = link && link.split(link_delim)[5];
+
+  if (!link || !channel || !epoch || !id) return false;
+
+  let target = threadpost ? MSGS[CH[channel]][threadpost].thread : MSGS[CH[channel]];
+  if (!target[id] && id !== threadpost) {
+    target[id] = {};
+    try {
+      target[id].channel = channel;
+      target[id].id = id;
+      target[id].link = link;
+      target[id].name = msgElem.lastChild.firstChild.firstChild.textContent;
+      target[id].user_id = msgElem.lastChild.firstChild.firstChild.href.split('/').slice(-1)[0];
+      target[id].text = msgElem.lastChild.children[3].textContent;
+      target[id].html = parseHTML(JSDOM.fragment(msgElem.lastChild.outerHTML));
+      target[id].avatar = msgElem.firstChild.firstChild.firstChild.src;
+      // console.log('got html', target[id].html);
+      if (target[id].html.text === undefined && target[id].html.files === undefined) {
+        console.log('error html at', msgElem.lastChild.outerHTML);
+      }
+      target[id].time = msgElem.lastChild.children[1].textContent;
+      target[id].epoch = epoch;
+      target[id].thread_id = threadpost;
+      MSGS[CH[channel]].messages++;
+    } catch (err) {
+      target[id].error = err;
+      target[id].errorHTML = msgElem.lastChild.outerHTML;
+      console.log('error parsing at', msgElem.lastChild.outerHTML);
+      console.error(err);
+    }
+    // console.log('target[id]', target[id]);
+  }
+  return target[id];
+}
+
+async function parse_message(msgElem, page) {
+  const { channel, id } = simple_parse(msgElem);
+  if (channel && id && !MSGS[CH[channel]][id].thread) {
+    let threadElemOpener = await msgElem.querySelector("div:last-child.c-message_kit__thread_replies > a");
+    if (threadElemOpener) {
+      if (!MSGS[CH[channel]][id].thread) MSGS[CH[channel]][id].thread = {};
+      await msgElem.elm.evaluate((el) => {
+        el.querySelector("div:last-child.c-message_kit__thread_replies > a").click();
+        el.querySelector("div:last-child.c-message_kit__thread_replies > a").click();
+      });
+      const elem = await page.waitForSelector("div.p-workspace__secondary_view div.c-scrollbar__hider");
+      await page.waitForSelector("div.p-workspace__secondary_view div.c-scrollbar__hider div.c-message_kit__gutter__right[data-qa='message_content'] span.c-message__sender a");
+      await page.waitForTimeout(3000);
+  
+      const elem_html = await elem.evaluate((el) => el.innerHTML);
+      const frag = JSDOM.fragment(elem_html);
+      const data = frag.querySelectorAll("div.c-message_kit__gutter");
+      let thread = [...data].map((msg) => simple_parse(msg, id));
+  
+      let scroll = await elem.evaluate((el) => el.scrollTop);
+      // console.log('start scroll', scroll);
+      await elem.evaluate((el) => {el.scrollTo(0, 999999);});
+  
+      while (scroll != await elem.evaluate((el) => el.scrollTop)) {
+        await elem.evaluate((el) => {el.scrollTo(0, 999999);});
+        await page.waitForTimeout(1300);
+        scroll = await elem.evaluate((el) => el.scrollTop);
+      }
+  
+      while (await elem.evaluate((el) => el.scrollTop) > 0) {
+        await elem.evaluate((el) => {el.scrollTo(0, -999999);});
+        await page.waitForTimeout(3000);
+        const elem_html = await elem.evaluate((el) => el.innerHTML);
+        const frag = JSDOM.fragment(elem_html);
+        const data = frag.querySelectorAll("div.c-message_kit__gutter");
+        thread = [...data].map((msg) => simple_parse(msg, id));
+      }
+  
+      page.evaluate(() => {
+        const close = document.querySelector("div.p-workspace__secondary_view > div > div > div > div.p-flexpane_header > div > button");
+        if (close) close.click();
+      })
+      await page.waitForTimeout(500);
+    }
+    MSGS[CH[channel]][id].threadCount = threadElemOpener && +threadElemOpener.textContent?.split(" ")[0];
+    MSGS[CH[channel]][id].threadFactCount = MSGS[CH[channel]][id].thread && Object.keys(MSGS[CH[channel]][id].thread).length;
+  }
+}
+
+async function getRaw(elem, page) {
+  const elem_html = await elem.evaluate((el) => el.innerHTML);
+  const elements = await page.$$("div.p-workspace__primary_view div.c-message_kit__gutter");
+  const datik = [...elements];
+  const frag = JSDOM.fragment(elem_html);
+  const data = frag.querySelectorAll("div.c-message_kit__gutter");
+  const msgs_raw = [...data];
+  msgs_raw.forEach((raw, index) => { raw.elm = datik[index]; });
+  for (msg of msgs_raw) {
+    try {
+      await parse_message(msg, page);
+    } catch (err) {
+      console.log('error occured', err);
+    }
+  }
 }
 
 /**
 * Получает информацию по карте, возвращает количество спаршенных кластеров
 */
-async function getMapInfo (url) {
+async function parseInfo (channel) {
   const page = await browser.newPage();
   
-  await page.goto(url);
-
+  await page.goto(`https://app.slack.com/client/TE6FVDN1Y/${channel}`, { waitUntil: 'load' });
+  await page.waitForTimeout(2000);
   const current = await page.url();
   let counter = 0;
 
-  if (current.includes("https://auth.sberclass.ru/auth/realms/")) {
-    await page.type("input[name='username']", LOGIN); // {delay: 70}
-    await page.type("input[name='password']", PASS); // {delay: 60}
+  if (current.includes("workspace-signin")) {
+    await page.type("input[data-qa='signin_domain_input'", '21born2code'); // {delay: 70}
+    page.keyboard.press('Enter');
+    await page.waitForNavigation();
+    await page.type("input[data-qa='login_email'", LOGIN);
+    await page.type("input[data-qa='login_password']", PASS); // {delay: 60}
     page.keyboard.press('Enter');
     await page.waitForNavigation();
   }
 
-  await page.waitForSelector('footer');   // ("h5[data-test-id='Components.Campus.ListItem.title']");
-
   try {
-    events = await getData(page, 'h5');
+    await page.waitForSelector('span.c-message__sender');   // ("h5[data-test-id='Components.Campus.ListItem.title']");
+    await page.waitForTimeout(5000);
+
+    const elem = await page.waitForSelector("div.p-workspace__primary_view div.c-scrollbar__hider");
+
+    await elem.evaluate((el) => {el.scrollTo(0, -999999);});
+    await page.waitForTimeout(2000);
+    await getRaw(elem, page);
+
+    while (await page.$('div.p-message_pane_banner.p-message_pane_banner--persistent') === null) {
+      await elem.evaluate((el) => {el.scrollTo(0, -999999);});
+      await page.waitForTimeout(2000);
+      await getRaw(elem, page);
+    }
   } catch (err) {
-    events = 'fail';
+    console.log('probably no messages for channel', channel);
   }
-
-  await Promise.all(CLUSTERS.map(async (cluster) => {
-    const evalVar = get_headers(cluster.id);
-    try {
-      cluster.students = await page.evaluate((evalVar) => {
-        console.log('v', evalVar);
-        return fetch("https://edu.21-school.ru/services/graphql", evalVar)
-                .then(res => res.json())
-                .then(answer => answer?.data?.student?.getClusterPlanStudentsByClusterId?.occupiedPlaces);
-      }, evalVar);
-    } catch (err) {
-      console.error(err);
-      return false;
-    }
-  }));
-
-  CAMPUS = {};
-
-  CLUSTERS.forEach(cluster => {
-    if (Array.isArray(cluster.students)) {
-      // cluster.students.forEach(stud => {
-      //   console.log('stud', stud);
-      // });
-      cluster.students = cluster.students.map((student) => format(cluster.code, student));
-      counter++;
-      cluster.students.forEach((student) => {
-        CAMPUS[student.nick] = student;
-      });
-    }
-    // console.log('students in', cluster.code, '\n', cluster.students);
-  });
+  
+  await page.waitForTimeout(1000);
 
   await page.close();
   return counter;
 }
 
-init()
+init();
+// parseHTML();

@@ -12,15 +12,16 @@ const getRows = async ( sheet ) => {
     return rows;
 };
 
-const setInfo = (info, status, events) => {
-    info[1].status = status ? 'ok' : 'fail';
-    info[1].update = (new Date()).getTime();
-    info[1].events = events;
-    if (info[1].history && info[1]._history) {
-        info[1]._history = [{[info[1].status]: info[1].update}, ...info[1]._history].slice(0, 1440);
-        info[1].history = JSON.stringify(info[1]._history);
+const setInfo = (info, status) => {
+    info[3].status = status ? 'ok' : 'fail';
+    info[3].update = (new Date()).getTime();
+    // console.log('setting info', info[3]);
+    if (info[3].history && info[3]._history) {
+        // console.log('setting history', info[3].history, info[3]._history);
+        info[3]._history = [...info[3]._history].slice(0, 2000);
+        info[3].history = JSON.stringify(info[3]._history);
     }
-    info[1].save();
+    info[3].save();
 }
 
 module.exports = {

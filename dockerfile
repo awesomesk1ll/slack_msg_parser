@@ -5,7 +5,7 @@ WORKDIR /usr/src/app
 
 COPY ./package.json /usr/src/app/
 RUN apt update
-RUN apt-get -y install chromium
+RUN apt-get -y install chromium-browser
 RUN npm install --production && npm cache clean --force
 
 COPY ./ /usr/src/app
